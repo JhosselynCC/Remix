@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >0.7.0<0.9.0;
+
+contract Auction {
+
+
+    
+    //variables de estado)
+
+    
+    uint256 public initialValue;
+    uint256 public initialDate;
+    uint256 public durationTime;
+    uint256 private highestBid;
+    address private winningBidder;
+    uint8 public semaforo;
+    address public owner;
+ 
+    mapping(address => uint256) public balance; //Utilizar un mapping para rastrear el total ofertado por cada dirección.
+    mapping(address => uint256) public lastOffer; // Mapeo que guarda la última oferta de cada participante
+
+   //Constructor. Inicializa la subasta con los parámetros necesario para su funcionamiento.
+
+    constructor() {
+        owner = msg.sender;
+        initialValue = 0 gwei;
+        initialDate = block.timestamp;
+        durationTime = initialDate;
+    }
+
+
+    struct Offer {
+        address _addrBidder ; // la dirección del ofertante.
+        uint256 _offeredValue; // la cantidad de ether ofrecida.
+        uint256 date; // la fecha de la oferta.
+    }
+
+    Offer[] public offers; //Crear un array de ofertas para almacenar todas las Ofertas realizadas al contrato.
+    
+    address[] public uniqueAddr;
+
+    event OffersMade(address indexed _addrBidder, uint256 _offeredValue, uint256 date);
+    
+    // Evento incrementar 10' al tiempo de duracion
+    event AuctionExtended(uint256 newDurationTime);
+    // Evento para notificar cuando hay un cambio de ganador
+    event WinnerUpdated(address newWinner, uint256 newHighestBid);
+
+    
+    modifier onlyOwner() {
+        require(msg.sender ==owner, "You are not autorized to withdraw funds");
+        
+        _;
+    }
+    
+
+/*Función para ofertar: Permite a los participantes ofertar por el artículo. Para que una oferta sea válida debe ser mayor que la mayor oferta actual al menos en 5% y debe realizarse mientras la subasta esté activa.
+Mostrar ganador: Muestra el ofertante ganador y el valor de la oferta ganadora.*/
+
+    function setOffer() external payable {
+        require(semaforo==0,"The auction ended");
+        uint256 _offeredValue = msg.value;
+        require(_offeredValue > 0, "El monto debe ser mayor que 0");
+        require(_offeredValue>initialValue,"The value is lower than the initial value");
+
+        address _addrBidder = msg.sender;
+        offers.push(Offer(_addrBidder,msg.value, block.timestamp));
+
+        if(balance[_addrBidder]==0) {
+            uniqueAddr.push(_addrBidder);
+                }
+        balance[_addrBidder] +=  msg.value;
+
+         // Update the last offer amount
+        lastOffer[_addrBidder] = _offeredValue;
+
+        emit OffersMade(_addrBidder, msg.value, block.timestamp);
+        
+
+        // Verificamos si estamos dentro de los últimos 10 minutos de la subasta
+        if (block.timestamp >= durationTime - 10 minutes) {
+            durationTime += 10 minutes; // Extendemos la subasta por 10 minutos
+
+            emit AuctionExtended(durationTime); // Emitimos un evento
+        }
+
+        // Ahora que se ha realizado el retiro, debemos revisar si el ganador necesita ser actualizado
+        updateWinner();
+    }
+
+
+    function updateWinner() internal {
+        uint256 highest = 0;
+        address highestBidder = address(0);
+
+        // Recorremos todas las direcciones únicas para determinar el nuevo ganador
+        for (uint256 i = 0; i < uniqueAddr.length; i++) {
+            address bidder = uniqueAddr[i];
+            uint256 bidderBalance = balance[bidder];
+
+        // Verificamos si la nueva oferta es mayor al 5% respecto al highestBid
+        if (bidderBalance > highest && bidderBalance > (highest + (highest * 5 / 100))) {
+            highest = bidderBalance;
+            highestBidder = bidder;
+        }
+    }
+
+    // Si encontramos un nuevo ganador, actualizamos el estado
+        if (highestBidder != winningBidder) {
+            highestBid = highest;
+            winningBidder = highestBidder;
+
+        // Emitimos el evento de cambio de ganador
+            emit WinnerUpdated(winningBidder, highestBid);
+        }
+    }
+
+    // Mostrar el ofertante ganador y el valor de la oferta
+
+    function getWinnerAndBalance() external view returns (address winner, uint256 totalBalance) {
+    return (winningBidder, balance[winningBidder]);
+    }
+
+    function EndAuction( ) external {
+        require(owner==msg.sender,"You are not authorized to end the auction");
+        semaforo = 1;
+    }
+
+
+//Mostrar ofertas: Muestra la lista de ofertantes y los montos ofrecidos.
+
+    function GetOffers() external view returns (Offer[] memory _Offers) {
+        uint256 len = uniqueAddr.length;
+
+        _Offers = new Offer[](len);   // Inicializar el arreglo de memoria con el tamaño adecuado
+        for(uint256 i=0; i< len; i++) {
+            _Offers[i] = Offer(uniqueAddr[i],balance[uniqueAddr[i]],block.timestamp);
+        }
+        return _Offers;
+    }
+
+ 
+/*
+Devolver depósitos: Al finalizar la subasta se devuelve el depósito a los ofertantes que no ganaron, descontando una comisión del 2% para el gas.
+Manejo de depósitos:
+*/
+
+    function refundLosers() external onlyOwner {
+        require(semaforo == 1, "Auction is not over yet");
+       // require(msg.sender == owner, "You are not authorized to refund");
+
+        // Reembolsa a los ofertantes no ganadores
+        for (uint256 i = 0; i < uniqueAddr.length; i++) {
+            address bidder = uniqueAddr[i];
+            if (bidder != winningBidder) { // Solo los no ganadores
+                uint256 amountToRefund = balance[bidder];
+                uint256 commission = amountToRefund * 2 / 100; // 2% de comisión
+                uint256 refundAmount = amountToRefund - commission; // El monto que se devuelve
+
+                // Asegúrate de que el contrato tiene suficiente saldo
+                require(address(this).balance >= refundAmount, "Insufficient funds in contract");
+
+                // Transferir los fondos al ofertante
+                payable(bidder).transfer(refundAmount);
+
+                // Resetear el saldo del ofertante
+                balance[bidder] = 0;
+            }
+        }
+    }
+
+
+        // Función para realizar un reembolso parcial durante la subasta
+    function withdrawPartial() external {
+        require(semaforo == 0, "Auction has ended");
+
+        address _addrBidder = msg.sender;
+  // Ensure the bidder has made a valid offer (i.e., they have a balance)
+        require(balance[_addrBidder] > 0, "No funds to withdraw");
+
+        uint256 excessAmount = balance[_addrBidder] - lastOffer[_addrBidder]; // El exceso sobre la última oferta
+
+        require(excessAmount > 0, "No funds available to withdraw");
+
+        // Actualizamos el saldo del ofertante
+        balance[_addrBidder] -= excessAmount;
+
+        // Transferimos el exceso al ofertante
+        payable(_addrBidder).transfer(excessAmount);
+
+        // Ahora que se ha realizado el retiro, debemos revisar si el ganador necesita ser actualizado
+        updateWinner();
+    }
+
+
+
+
+    /*
+    retirar los fondos a la cuenta del Owner
+    */
+
+    function withdrawFunds() external onlyOwner{
+        payable(msg.sender).transfer(address(this).balance); // address.balance
+        
+    }
+    
+
+}
+
